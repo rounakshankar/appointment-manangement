@@ -170,10 +170,6 @@ See `CLOUD_DEPLOYMENT_CHECKLIST.md` and `DEPLOYMENT_SPEC_SHEET.md` for detailed 
 4. Add tests
 5. Submit a pull request
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Support
 
 For questions or issues, please open an issue on GitHub or contact the development team.
