@@ -2,123 +2,181 @@
 
 Provisions the full CACMS infrastructure on AWS using free-tier eligible resources.
 
-## What Gets Created
+## Architecture
 
 ```
-AWS Account
-└── VPC (10.0.0.0/16)
-    ├── Public Subnet (10.0.1.0/24)  ← EC2 lives here
-    │   └── EC2 t2.micro (Ubuntu 22.04)
-    │       ├── Docker: cacms-api (port 8000)
-    │       ├── Docker: redis:7-alpine (internal)
-    │       └── Elastic IP (stable public IP)
-    ├── Private Subnet A (10.0.10.0/24)  ← RDS lives here
-    ├── Private Subnet B (10.0.11.0/24)  ← RDS subnet group (2 AZs required)
-    │   └── RDS db.t3.micro (PostgreSQL 16, 20 GB, encrypted)
-    ├── Security Group: ec2-sg  (SSH from your IP, port 8000 public)
-    └── Security Group: rds-sg  (port 5432 from EC2 only)
+Browser (user)
+      │ HTTP port 80
+      ▼
+┌─────────────────────────────────────────┐
+│  Frontend EC2 — t2.micro (Ubuntu 22.04) │
+│  Nginx serves Flutter Web (SPA)         │
+│  /api/* proxied to backend private IP   │
+│  Elastic IP: public entry point         │
+└──────────────────┬──────────────────────┘
+                   │ port 8000 (VPC internal only)
+                   ▼
+┌─────────────────────────────────────────┐
+│  Backend EC2 — t2.micro (Ubuntu 22.04)  │
+│  FastAPI + Uvicorn (systemd service)    │
+│  Redis (apt, localhost only)            │
+│  No Docker — runs directly on the OS   │
+└──────────────────┬──────────────────────┘
+                   │ port 5432 (VPC internal only)
+                   ▼
+┌─────────────────────────────────────────┐
+│  RDS db.t3.micro — PostgreSQL 16        │
+│  20 GB encrypted storage                │
+│  Private subnets only (no public access)│
+└─────────────────────────────────────────┘
+```
+
+## Security Group Chain
+
+| Group | Inbound | From |
+|-------|---------|------|
+| `frontend-sg` | 80, 443 | `0.0.0.0/0` (internet) |
+| `frontend-sg` | 22 | `ssh_allowed_cidr` |
+| `backend-sg` | 8000 | `frontend-sg` only |
+| `backend-sg` | 22 | `ssh_allowed_cidr` |
+| `rds-sg` | 5432 | `backend-sg` only |
+
+The backend API port (8000) and database port (5432) are **never exposed to the internet**.
+
+## What Gets Created (17 resources)
+
+```
+VPC (10.0.0.0/16)
+├── Public Subnet (10.0.1.0/24)
+│   ├── Frontend EC2 + Elastic IP
+│   └── Backend EC2 + Elastic IP
+├── Private Subnet A (10.0.10.0/24)
+├── Private Subnet B (10.0.11.0/24)
+│   └── RDS db.t3.micro (PostgreSQL 16)
+├── Security Group: frontend-sg
+├── Security Group: backend-sg
+└── Security Group: rds-sg
 ```
 
 ## Prerequisites
 
 1. **AWS account** with free tier active
-2. **AWS CLI** installed and configured (`aws configure`)
-3. **Terraform >= 1.6** installed ([download](https://developer.hashicorp.com/terraform/downloads))
-4. **EC2 Key Pair** created in AWS Console → EC2 → Key Pairs → Create
-   - Download the `.pem` file and save to `~/.ssh/cacms-key.pem`
-   - `chmod 400 ~/.ssh/cacms-key.pem`
-5. **Your public IP** — run `curl ifconfig.me`
+2. **AWS CLI** configured (`aws configure`)
+3. **Terraform >= 1.6** ([download](https://developer.hashicorp.com/terraform/downloads))
+4. **EC2 Key Pair** in AWS Console → EC2 → Key Pairs → Create
+   - Save `.pem` to `~/.ssh/cacms-key.pem`
+5. **Public GitHub repo** — the bootstrap scripts clone via HTTPS
 
 ## Quick Start
 
 ```bash
-# 1. Enter the terraform directory
 cd terraform
 
-# 2. Copy and fill in variables
+# 1. Copy and fill in variables
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values (key pair name, IP, secrets, git URL)
+# Edit: key pair name, RDS password, JWT secret, superadmin token, git URL
 
-# 3. Initialize Terraform
+# 2. Initialize
 terraform init
 
-# 4. Preview what will be created
+# 3. Preview
 terraform plan
 
-# 5. Deploy (takes ~10-15 minutes — RDS takes the longest)
+# 4. Deploy (~20-25 min — RDS + Flutter build are the slow parts)
 terraform apply
-
-# 6. Note the outputs:
-#    ec2_public_ip       → your server's IP
-#    api_health_url      → verify deployment
-#    flutter_build_command → build your APK
-#    ssh_command         → connect to EC2
-#    seed_owner_command  → create first clinic owner
 ```
 
 ## After Apply
 
-### Verify the deployment
+Terraform prints these outputs:
+
+| Output | Value |
+|--------|-------|
+| `app_url` | `http://FRONTEND_IP` — open in browser |
+| `frontend_public_ip` | Frontend EC2 Elastic IP |
+| `backend_public_ip` | Backend EC2 Elastic IP (SSH only) |
+| `api_health_url` | `http://BACKEND_IP:8000/health` (SSH tunnel to test) |
+| `ssh_frontend` | SSH command for frontend EC2 |
+| `ssh_backend` | SSH command for backend EC2 |
+| `backend_logs` | Stream live API logs |
+| `frontend_logs` | Watch Flutter build progress |
+
+### Monitor bootstrap progress
 
 ```bash
-# Check health (may take 3-5 minutes for bootstrap to complete)
-curl http://YOUR_EC2_IP:8000/health
-# Expected: {"status": "ok", ...}
+# Frontend (Flutter build takes 15-20 min)
+ssh -i ~/.ssh/cacms-key.pem ubuntu@FRONTEND_IP \
+  'tail -f /var/log/cacms-frontend-bootstrap.log'
 
-# Watch bootstrap logs
-ssh -i ~/.ssh/cacms-key.pem ubuntu@YOUR_EC2_IP 'tail -f /var/log/cacms-bootstrap.log'
+# Backend
+ssh -i ~/.ssh/cacms-key.pem ubuntu@BACKEND_IP \
+  'tail -f /var/log/cacms-backend-bootstrap.log'
+
+# Live API logs (after backend is up)
+ssh -i ~/.ssh/cacms-key.pem ubuntu@BACKEND_IP \
+  'sudo journalctl -u cacms-api -f'
+```
+
+### Verify deployment
+
+```bash
+# Backend health (via SSH tunnel — port 8000 is not public)
+ssh -i ~/.ssh/cacms-key.pem ubuntu@BACKEND_IP \
+  'curl -s http://localhost:8000/health'
+# Expected: {"status":"ok","checks":{"database":"ok","redis":"ok"}}
+
+# Frontend (public — open in browser)
+curl http://FRONTEND_IP
+# Expected: Flutter Web HTML page
 ```
 
 ### Create the first clinic owner
 
 ```bash
-ssh -i ~/.ssh/cacms-key.pem ubuntu@YOUR_EC2_IP \
-  'cd ~/cacms && docker compose -f docker-compose.aws.yml --env-file .env.production exec api \
-   python scripts/create_owner.py \
-   --username owner \
-   --password "YourStrongPassword123!" \
-   --clinic-name "Your Clinic Name"'
+# Via the public API endpoint (register-clinic is open)
+curl -X POST http://FRONTEND_IP/api/v1/auth/register-clinic \
+  -H "Content-Type: application/json" \
+  -d '{"clinic_name":"My Clinic","owner_username":"owner","owner_password":"StrongPass123!"}'
 ```
-
-### Build the Flutter APK
-
-```bash
-# From your local machine
-cd cacms_flutter
-flutter build apk --dart-define=BACKEND_URL=http://YOUR_EC2_IP:8000
-# APK: build/app/outputs/flutter-apk/app-release.apk
-```
-
-## Outputs Reference
-
-| Output | Description |
-|--------|-------------|
-| `ec2_public_ip` | Stable Elastic IP for your server |
-| `rds_endpoint` | RDS hostname (internal to VPC) |
-| `api_health_url` | `http://IP:8000/health` |
-| `api_docs_url` | `http://IP:8000/docs` (Swagger) |
-| `flutter_build_command` | Ready-to-run Flutter build command |
-| `ssh_command` | SSH into EC2 |
-| `seed_owner_command` | Create first owner account |
-| `bootstrap_log_command` | Watch bootstrap progress |
 
 ## Updating the App
 
-```bash
-# SSH into EC2
-ssh -i ~/.ssh/cacms-key.pem ubuntu@YOUR_EC2_IP
+### Backend update (code change)
 
-# Pull latest code and redeploy
+```bash
+ssh -i ~/.ssh/cacms-key.pem ubuntu@BACKEND_IP
 cd ~/cacms
 git pull origin main
-docker compose -f docker-compose.aws.yml --env-file .env.production build api
-docker compose -f docker-compose.aws.yml --env-file .env.production up -d
+.venv/bin/pip install -e ".[dev]"          # if dependencies changed
+set -a && source .env.production && set +a
+.venv/bin/alembic upgrade head             # if migrations changed
+sudo systemctl restart cacms-api
+sudo systemctl status cacms-api
+```
+
+### Frontend update (Flutter Web rebuild)
+
+```bash
+ssh -i ~/.ssh/cacms-key.pem ubuntu@FRONTEND_IP
+cd ~/cacms/cacms_flutter
+git pull origin main
+/opt/flutter/bin/flutter pub get
+/opt/flutter/bin/flutter build web \
+  --dart-define=BACKEND_URL=http://BACKEND_PRIVATE_IP:8000 \
+  --release
+sudo cp -r build/web/. /var/www/cacms/
+sudo chown -R www-data:www-data /var/www/cacms
+sudo systemctl reload nginx
 ```
 
 ## Teardown
 
 ```bash
-# WARNING: This destroys everything including the RDS database
+# WARNING: Destroys everything including the RDS database and all data
+# Take a snapshot first if you need the data:
+# aws rds create-db-snapshot --db-instance-identifier cacms-db \
+#   --db-snapshot-identifier cacms-backup --region ap-south-1
+
 terraform destroy
 ```
 
@@ -126,12 +184,28 @@ terraform destroy
 
 | Resource | Free Tier | Monthly After |
 |----------|-----------|---------------|
-| EC2 t2.micro | 750 hrs/month | ~$8.50 |
-| RDS db.t3.micro | 750 hrs/month + 20 GB | ~$15.00 |
-| EBS 20 GB gp2 | 30 GB/month | ~$2.00 |
-| Elastic IP | Free when attached | $0.005/hr if detached |
+| EC2 t2.micro x2 | 750 hrs/month total | ~$17/month |
+| RDS db.t3.micro | 750 hrs/month + 20 GB | ~$15/month |
+| EBS 20 GB x2 | 30 GB/month | ~$4/month |
+| Elastic IP x2 | Free when attached | $0.005/hr if detached |
 | Data transfer | 100 GB/month | $0.09/GB |
-| **Total year 1** | **~$0** | **~$25/month** |
+| **Total year 1** | **~$0** | **~$36/month** |
 
-> Keep EC2 and RDS running continuously — stopping/starting doesn't save money on free tier
-> and risks losing your Elastic IP association.
+> Note: Two t2.micro instances together use 1,500 hrs/month but the free tier
+> only covers 750 hrs/month total. After the first month you'll be charged for
+> the second instance (~$8.50/month). Consider stopping one when not testing.
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `main.tf` | Provider config |
+| `vpc.tf` | VPC, subnets, routing |
+| `security_groups.tf` | Frontend, backend, RDS security groups |
+| `ec2.tf` | Both EC2 instances + EIPs + CORS update |
+| `rds.tf` | PostgreSQL RDS instance |
+| `variables.tf` | All input variables |
+| `outputs.tf` | Post-apply outputs |
+| `backend_user_data.sh.tpl` | Backend bootstrap (Python, Redis, systemd) |
+| `frontend_user_data.sh.tpl` | Frontend bootstrap (Flutter build, Nginx) |
+| `terraform.tfvars.example` | Template for your secrets |

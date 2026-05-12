@@ -13,7 +13,7 @@ apt-get update -y
 apt-get upgrade -y
 apt-get install -y \
   curl git ca-certificates gnupg \
-  python3.12 python3.12-venv python3.12-dev \
+  python3 python3-venv python3-dev \
   python3-pip build-essential libpq-dev \
   redis-server postgresql-client-14
 
@@ -37,7 +37,7 @@ chown -R ubuntu:ubuntu "$APP_DIR"
 # 4. Create Python virtual environment and install dependencies
 # ---------------------------------------------------------------------------
 cd "$APP_DIR"
-python3.12 -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -e ".[dev]"
 # Install aiosmtplib explicitly (added in Phase 1 SaaS)
