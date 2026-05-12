@@ -58,6 +58,10 @@ services:
       AUTH_RATE_LIMIT: ${AUTH_RATE_LIMIT:-10/minute}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+      SUPERADMIN_TOKEN: ${SUPERADMIN_TOKEN:-}
+      OTP_TTL_SECONDS: ${OTP_TTL_SECONDS:-300}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
     volumes:
       - backup_data:/var/backups/cacms
     depends_on:
