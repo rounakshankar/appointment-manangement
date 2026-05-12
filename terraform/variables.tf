@@ -1,11 +1,11 @@
 ###############################################################################
-# Input variables — set values in terraform.tfvars (never commit that file)
+# Input variables - set values in terraform.tfvars (never commit that file)
 ###############################################################################
 
 variable "aws_region" {
-  description = "AWS region to deploy into. Free tier is per-account, not per-region."
+  description = "AWS region to deploy into."
   type        = string
-  default     = "ap-south-1" # Mumbai — closest to India; change to us-east-1 etc. if needed
+  default     = "ap-south-1"
 }
 
 variable "project" {
@@ -15,7 +15,7 @@ variable "project" {
 }
 
 variable "environment" {
-  description = "Deployment environment label (production, staging, etc.)."
+  description = "Deployment environment label."
   type        = string
   default     = "production"
 }
@@ -31,18 +31,12 @@ variable "ec2_instance_type" {
 }
 
 variable "ec2_key_pair_name" {
-  description = "Name of an existing EC2 key pair for SSH access. Create one in the AWS console first."
+  description = "Name of an existing EC2 key pair for SSH access."
   type        = string
 }
 
 variable "ssh_allowed_cidr" {
-  description = "CIDR block allowed to SSH into EC2. Use your public IP: curl ifconfig.me"
-  type        = string
-  # Example: "203.0.113.42/32"
-}
-
-variable "api_allowed_cidr" {
-  description = "CIDR block allowed to reach port 8000. Use 0.0.0.0/0 for public access."
+  description = "CIDR block allowed to SSH into both EC2 instances."
   type        = string
   default     = "0.0.0.0/0"
 }
@@ -58,7 +52,7 @@ variable "rds_instance_class" {
 }
 
 variable "rds_db_name" {
-  description = "PostgreSQL database name to create."
+  description = "PostgreSQL database name."
   type        = string
   default     = "cacms"
 }
@@ -70,7 +64,7 @@ variable "rds_username" {
 }
 
 variable "rds_password" {
-  description = "PostgreSQL master password. Must be at least 8 characters. Store securely."
+  description = "PostgreSQL master password. Must be at least 8 characters."
   type        = string
   sensitive   = true
 }
@@ -82,17 +76,23 @@ variable "rds_allocated_storage" {
 }
 
 # ---------------------------------------------------------------------------
-# App secrets (written to EC2 as /home/ubuntu/cacms/.env.production)
+# App secrets
 # ---------------------------------------------------------------------------
 
 variable "jwt_secret" {
-  description = "JWT signing secret. Generate: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+  description = "JWT signing secret."
+  type        = string
+  sensitive   = true
+}
+
+variable "superadmin_token" {
+  description = "Static token for the super-admin API."
   type        = string
   sensitive   = true
 }
 
 variable "backup_encryption_key" {
-  description = "AES backup encryption key. Generate: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+  description = "AES backup encryption key."
   type        = string
   sensitive   = true
   default     = ""
@@ -105,13 +105,13 @@ variable "sentry_dsn" {
 }
 
 # ---------------------------------------------------------------------------
-# Git / deployment
+# Git
 # ---------------------------------------------------------------------------
 
 variable "git_repo_url" {
-  description = "Git repository URL to clone on EC2. Use HTTPS for public repos."
+  description = "Git repository URL (public HTTPS)."
   type        = string
-  default     = "https://github.com/YOUR_ORG/cacms.git"
+  default     = "https://github.com/rounakshankar/appointment-manangement.git"
 }
 
 variable "git_branch" {

@@ -1,13 +1,12 @@
 ###############################################################################
-# EC2 — Ubuntu 22.04, t2.micro (free tier)
-# user_data bootstraps Docker, clones the repo, writes .env.production,
-# and starts the app via docker-compose.aws.yml
+# EC2 Instances
+# - backend: FastAPI + Redis via systemd (no Docker)
+# - frontend: Flutter Web served by Nginx, proxies /api/* to backend
 ###############################################################################
 
-# Latest Ubuntu 22.04 LTS AMI (official Canonical)
 data "aws_ami" "ubuntu_22_04" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical
+  owners      = ["099720109477"]
 
   filter {
     name   = "name"
@@ -21,32 +20,16 @@ data "aws_ami" "ubuntu_22_04" {
 }
 
 # ---------------------------------------------------------------------------
-# Elastic IP — gives a stable public IP that survives EC2 stop/start
+# Backend EC2 - FastAPI + Redis, no Docker
 # ---------------------------------------------------------------------------
 
-resource "aws_eip" "api" {
-  instance = aws_instance.api.id
-  domain   = "vpc"
-
-  tags = {
-    Name        = "${var.project}-eip"
-    Project     = var.project
-    Environment = var.environment
-  }
-}
-
-# ---------------------------------------------------------------------------
-# EC2 instance
-# ---------------------------------------------------------------------------
-
-resource "aws_instance" "api" {
+resource "aws_instance" "backend" {
   ami                    = data.aws_ami.ubuntu_22_04.id
   instance_type          = var.ec2_instance_type
   key_name               = var.ec2_key_pair_name
   subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.ec2.id]
+  vpc_security_group_ids = [aws_security_group.backend.id]
 
-  # 20 GB root volume (free tier includes 30 GB EBS)
   root_block_device {
     volume_type           = "gp2"
     volume_size           = 20
@@ -54,59 +37,120 @@ resource "aws_instance" "api" {
     encrypted             = true
   }
 
-  # Bootstrap script — runs once on first boot
-  user_data = templatefile("${path.module}/user_data.sh.tpl", {
-    project               = var.project
+  user_data = templatefile("${path.module}/backend_user_data.sh.tpl", {
     git_repo_url          = var.git_repo_url
     git_branch            = var.git_branch
-    environment           = var.environment
-    database_url          = "postgresql+asyncpg://${var.rds_username}:${var.rds_password}@${aws_db_instance.postgres.address}:5432/${var.rds_db_name}"
+    rds_endpoint          = aws_db_instance.postgres.address
+    rds_username          = var.rds_username
+    rds_password          = var.rds_password
+    rds_db_name           = var.rds_db_name
     jwt_secret            = var.jwt_secret
+    superadmin_token      = var.superadmin_token
     backup_encryption_key = var.backup_encryption_key
     sentry_dsn            = var.sentry_dsn
-    # CORS_ORIGINS is set after EIP is known — updated by a second provisioner
-    cors_origins_placeholder = "REPLACE_WITH_EIP_AFTER_APPLY"
+    # CORS: frontend public IP is set after both instances are created
+    # Updated by null_resource.update_cors below
+    cors_origins          = "REPLACE_WITH_FRONTEND_IP"
   })
 
-  # Wait for RDS to be available before starting EC2 bootstrap
   depends_on = [aws_db_instance.postgres]
 
   tags = {
-    Name        = "${var.project}-api"
+    Name        = "${var.project}-backend"
+    Project     = var.project
+    Environment = var.environment
+    Role        = "backend"
+  }
+}
+
+resource "aws_eip" "backend" {
+  instance = aws_instance.backend.id
+  domain   = "vpc"
+
+  tags = {
+    Name        = "${var.project}-backend-eip"
     Project     = var.project
     Environment = var.environment
   }
 }
 
 # ---------------------------------------------------------------------------
-# Null resource — updates CORS_ORIGINS in .env.production with the real EIP
-# after both EC2 and EIP are created. Runs via SSH.
+# Frontend EC2 - Flutter Web + Nginx
+# Depends on backend so we know the backend private IP for Nginx proxy config
+# ---------------------------------------------------------------------------
+
+resource "aws_instance" "frontend" {
+  ami                    = data.aws_ami.ubuntu_22_04.id
+  instance_type          = var.ec2_instance_type
+  key_name               = var.ec2_key_pair_name
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.frontend.id]
+
+  root_block_device {
+    volume_type           = "gp2"
+    volume_size           = 20
+    delete_on_termination = true
+    encrypted             = true
+  }
+
+  user_data = templatefile("${path.module}/frontend_user_data.sh.tpl", {
+    git_repo_url       = var.git_repo_url
+    git_branch         = var.git_branch
+    # Use private IP so traffic stays within the VPC (no data transfer cost)
+    backend_private_ip = aws_instance.backend.private_ip
+  })
+
+  depends_on = [aws_instance.backend]
+
+  tags = {
+    Name        = "${var.project}-frontend"
+    Project     = var.project
+    Environment = var.environment
+    Role        = "frontend"
+  }
+}
+
+resource "aws_eip" "frontend" {
+  instance = aws_instance.frontend.id
+  domain   = "vpc"
+
+  tags = {
+    Name        = "${var.project}-frontend-eip"
+    Project     = var.project
+    Environment = var.environment
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Update CORS on backend after frontend EIP is known
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "update_cors" {
   triggers = {
-    eip = aws_eip.api.public_ip
+    frontend_eip = aws_eip.frontend.public_ip
   }
 
-  depends_on = [aws_eip.api, aws_instance.api]
+  depends_on = [aws_eip.frontend, aws_instance.backend]
 
   provisioner "remote-exec" {
     connection {
       type        = "ssh"
-      host        = aws_eip.api.public_ip
+      host        = aws_eip.backend.public_ip
       user        = "ubuntu"
       private_key = file("~/.ssh/${var.ec2_key_pair_name}.pem")
-      timeout     = "5m"
+      timeout     = "10m"
     }
 
     inline = [
-      # Wait for user_data to finish
-      "until [ -f /home/ubuntu/cacms/.env.production ]; do sleep 5; done",
-      # Replace the placeholder with the real EIP
-      "sed -i 's|REPLACE_WITH_EIP_AFTER_APPLY|http://${aws_eip.api.public_ip}:8000|g' /home/ubuntu/cacms/.env.production",
-      # Restart the API to pick up the new CORS_ORIGINS
-      "cd /home/ubuntu/cacms && docker compose -f docker-compose.aws.yml --env-file .env.production up -d --force-recreate api",
-      "echo 'CORS updated to http://${aws_eip.api.public_ip}:8000'"
+      # Wait for the API service to be running
+      "until systemctl is-active --quiet cacms-api; do echo 'Waiting for cacms-api...'; sleep 10; done",
+      # Update CORS_ORIGINS with the real frontend IP
+      "sed -i 's|CORS_ORIGINS=.*|CORS_ORIGINS=http://${aws_eip.frontend.public_ip}|' /home/ubuntu/cacms/.env.production",
+      # Restart the API to pick up new CORS setting
+      "sudo systemctl restart cacms-api",
+      "sleep 5",
+      "curl -sf http://localhost:8000/health && echo 'API healthy after CORS update'",
+      "echo 'CORS updated to http://${aws_eip.frontend.public_ip}'"
     ]
   }
 }

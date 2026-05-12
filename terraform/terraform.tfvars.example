@@ -1,45 +1,23 @@
 # CACMS Terraform variables
 # Copy to terraform.tfvars and fill in your values.
-# NEVER commit terraform.tfvars to git — it contains secrets.
+# NEVER commit terraform.tfvars to git.
 
-# ---------------------------------------------------------------------------
-# AWS
-# ---------------------------------------------------------------------------
-aws_region = "ap-south-1"   # Mumbai; change to us-east-1 for US East
-
-# ---------------------------------------------------------------------------
-# EC2
-# ---------------------------------------------------------------------------
-# Name of your EC2 key pair (create in AWS Console → EC2 → Key Pairs)
+aws_region        = "ap-south-1"
 ec2_key_pair_name = "cacms-key"
 
-# Your public IP — run: curl ifconfig.me
-# Must be in CIDR format: "YOUR_IP/32"
-ssh_allowed_cidr = "YOUR_PUBLIC_IP/32"
+# Your public IP for SSH access (run: curl ifconfig.me)
+# Use 0.0.0.0/0 if on IPv6 or dynamic IP
+ssh_allowed_cidr = "0.0.0.0/0"
 
-# Who can reach the API on port 8000
-# "0.0.0.0/0" = public; restrict to your IP during testing
-api_allowed_cidr = "0.0.0.0/0"
+# RDS password (min 8 chars)
+rds_password = "CHANGE_ME_strong_password"
 
-# ---------------------------------------------------------------------------
-# RDS
-# ---------------------------------------------------------------------------
-rds_password = "CHANGE_ME_strong_password_min_8_chars"
+# Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+jwt_secret            = "GENERATE_64_CHAR_HEX"
+superadmin_token      = "GENERATE_64_CHAR_HEX"
+backup_encryption_key = "GENERATE_64_CHAR_HEX"
 
-# ---------------------------------------------------------------------------
-# App secrets
-# ---------------------------------------------------------------------------
-# Generate: python3 -c "import secrets; print(secrets.token_hex(32))"
-jwt_secret            = "GENERATE_64_CHAR_HEX_HERE"
-backup_encryption_key = "GENERATE_64_CHAR_HEX_HERE"
-
-# ---------------------------------------------------------------------------
-# Git repository
-# ---------------------------------------------------------------------------
-git_repo_url = "https://github.com/YOUR_ORG/cacms.git"
+git_repo_url = "https://github.com/rounakshankar/appointment-manangement.git"
 git_branch   = "main"
 
-# ---------------------------------------------------------------------------
-# Optional
-# ---------------------------------------------------------------------------
 sentry_dsn = ""

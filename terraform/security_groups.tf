@@ -1,53 +1,44 @@
 ###############################################################################
 # Security Groups
+# Architecture:
+#   Internet -> Frontend EC2 (80/443) -> Backend EC2 (8000) -> RDS (5432)
+#   SSH allowed to both EC2s from ssh_allowed_cidr
 ###############################################################################
 
 # ---------------------------------------------------------------------------
-# EC2 security group
+# Frontend EC2 security group
+# Public-facing: accepts HTTP/HTTPS from anywhere, SSH from admin IP
 # ---------------------------------------------------------------------------
 
-resource "aws_security_group" "ec2" {
-  name        = "${var.project}-ec2-sg"
-  description = "CACMS EC2 - SSH and API port"
+resource "aws_security_group" "frontend" {
+  name        = "${var.project}-frontend-sg"
+  description = "CACMS Frontend - HTTP HTTPS and SSH"
   vpc_id      = aws_vpc.main.id
 
-  # SSH - restricted to your IP only
   ingress {
-    description = "SSH from admin IP"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.ssh_allowed_cidr]
-  }
-
-  # API port 8000 - public (restrict to your IP during testing if preferred)
-  ingress {
-    description = "CACMS API"
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = [var.api_allowed_cidr]
-  }
-
-  # HTTP 80 — needed for Nginx and Let's Encrypt ACME challenge
-  ingress {
-    description = "HTTP - Nginx and Lets Encrypt"
+    description = "HTTP from internet"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # HTTPS 443 — Nginx TLS termination
   ingress {
-    description = "HTTPS - Nginx TLS"
+    description = "HTTPS from internet"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # All outbound (Docker pulls, apt, git, RDS)
+  ingress {
+    description = "SSH from admin"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.ssh_allowed_cidr]
+  }
+
   egress {
     description = "All outbound"
     from_port   = 0
@@ -57,27 +48,69 @@ resource "aws_security_group" "ec2" {
   }
 
   tags = {
-    Name        = "${var.project}-ec2-sg"
+    Name        = "${var.project}-frontend-sg"
     Project     = var.project
     Environment = var.environment
   }
 }
 
 # ---------------------------------------------------------------------------
-# RDS security group — only accepts connections from EC2
+# Backend EC2 security group
+# Private-facing: only accepts API traffic from the frontend EC2
+# ---------------------------------------------------------------------------
+
+resource "aws_security_group" "backend" {
+  name        = "${var.project}-backend-sg"
+  description = "CACMS Backend - API from frontend only"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "FastAPI from frontend EC2 only"
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.frontend.id]
+  }
+
+  ingress {
+    description = "SSH from admin"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.ssh_allowed_cidr]
+  }
+
+  egress {
+    description = "All outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.project}-backend-sg"
+    Project     = var.project
+    Environment = var.environment
+  }
+}
+
+# ---------------------------------------------------------------------------
+# RDS security group
+# Only accepts connections from the backend EC2
 # ---------------------------------------------------------------------------
 
 resource "aws_security_group" "rds" {
   name        = "${var.project}-rds-sg"
-  description = "CACMS RDS - PostgreSQL from EC2 only"
+  description = "CACMS RDS - PostgreSQL from backend only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "PostgreSQL from EC2"
+    description     = "PostgreSQL from backend EC2 only"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.ec2.id]
+    security_groups = [aws_security_group.backend.id]
   }
 
   egress {
