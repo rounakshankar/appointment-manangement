@@ -1,0 +1,41 @@
+# Public / LAN test stack: API + Redis only. PostgreSQL runs on the Docker host (your PC).
+#
+# From the container, the host is NOT "localhost" — use host.docker.internal (Docker Desktop
+# Windows/Mac; Linux needs extra_hosts below).
+#
+# Run (from repo root, after creating a .env file — see .env.example):
+#   docker compose -f docker-compose.public.yml --env-file .env up --build
+#
+# Then open in Chrome:
+#   http://localhost:8000/docs
+#   http://<your-LAN-IP>:8000/docs   (other devices on your network)
+#
+# Inbound from the wider internet: allow TCP 8000 on Windows Firewall and forward the port
+# on your router to this machine (no TLS here — use only for short-lived testing).
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "0.0.0.0:8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env — use host.docker.internal not localhost}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000,http://localhost:8080,http://127.0.0.1:8080}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy

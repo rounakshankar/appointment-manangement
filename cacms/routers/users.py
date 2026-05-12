@@ -1,17 +1,19 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cacms.database import get_db
 from cacms.middleware.auth_middleware import UserContext, require_owner_or_admin
+from cacms.models.clinic import Clinic
 from cacms.models.doctor import Doctor
 from cacms.models.user import User
 from cacms.schemas.common import ErrorResponse
 from cacms.schemas.user import UserCreate, UserOut, UserUpdate
 from cacms.services.password_service import hash_password
+from cacms.services.plan_enforcer import plan_enforcer
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -68,6 +70,23 @@ async def create_user(
     current_user: UserContext = Depends(require_owner_or_admin),
 ):
     await _validate_linked_doctor(db, current_user.clinic_id, body.role, body.linked_doctor_id)
+
+    # Enforce max_staff plan limit (counts all non-owner active staff users)
+    clinic_result = await db.execute(select(Clinic).where(Clinic.clinic_id == current_user.clinic_id))
+    clinic = clinic_result.scalar_one_or_none()
+    if clinic is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"error_code": "CLINIC_NOT_FOUND", "message": "Clinic not found"})
+
+    staff_count_result = await db.execute(
+        select(func.count()).where(
+            User.clinic_id == current_user.clinic_id,
+            User.active == True,  # noqa: E712
+            User.role != "owner",
+        )
+    )
+    current_staff_count = staff_count_result.scalar_one()
+    plan_enforcer.check_limit(clinic, "max_staff", current_staff_count)
 
     staff_user = User(
         username=body.username.strip(),

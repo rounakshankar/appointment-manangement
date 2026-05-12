@@ -59,7 +59,7 @@ def _make_phone() -> str:
 
 
 @pytest_asyncio.fixture
-async def small_capacity_doctor(http_client: AsyncClient, admin_token: str) -> dict:
+async def small_capacity_doctor(http_client: AsyncClient) -> dict:
     """
     Seed a doctor with max_patients_per_day=3 directly in the test DB.
     Returns a dict with doctor_id and name.
@@ -69,6 +69,7 @@ async def small_capacity_doctor(http_client: AsyncClient, admin_token: str) -> d
 
     doctor_id = uuid.uuid4()
     doctor_name = f"Dr. Cap {uuid.uuid4().hex[:6]}"
+    clinic_id = http_client._cacms_clinic_id  # type: ignore[attr-defined]
 
     async with session_factory() as session:
         doc = Doctor(
@@ -77,6 +78,7 @@ async def small_capacity_doctor(http_client: AsyncClient, admin_token: str) -> d
             specialization="General",
             active=True,
             max_patients_per_day=3,
+            clinic_id=clinic_id,
         )
         session.add(doc)
         await session.commit()
@@ -95,6 +97,7 @@ async def seeded_service(http_client: AsyncClient) -> dict:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     service_id = uuid.uuid4()
+    clinic_id = http_client._cacms_clinic_id  # type: ignore[attr-defined]
     async with session_factory() as session:
         svc = Service(
             service_id=service_id,
@@ -102,6 +105,7 @@ async def seeded_service(http_client: AsyncClient) -> dict:
             category=ServiceCategory.consultation,
             base_price=Decimal("200.00"),
             active=True,
+            clinic_id=clinic_id,
         )
         session.add(svc)
         await session.commit()
@@ -167,7 +171,16 @@ async def test_full_happy_path_flow(
 
     # Step 3: Call Next — appointment transitions to in-progress
     from cacms.services.jwt_service import create_token
-    doctor_token = create_token({"sub": doctor_id, "role": "doctor"})
+
+    clinic_id = http_client._cacms_clinic_id  # type: ignore[attr-defined]
+    doctor_token = create_token(
+        {
+            "sub": doctor_id,
+            "role": "doctor",
+            "clinic_id": str(clinic_id),
+            "linked_doctor_id": doctor_id,
+        }
+    )
 
     cn = await http_client.patch(
         f"/v1/appointments/{appt_id}/clinical",

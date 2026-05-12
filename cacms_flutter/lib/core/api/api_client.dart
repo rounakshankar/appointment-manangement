@@ -1,5 +1,8 @@
 import 'package:dio/dio.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../auth/token_storage.dart';
+import '../models/auth.dart';
+import '../../features/setup/server_setup_screen.dart' show kServerUrlStorageKey;
 
 /// Typed error parsed from the backend error envelope:
 /// { "error_code": "...", "message": "...", "detail": {} }
@@ -61,6 +64,31 @@ class ApiClient {
     if (e is DioException && e.error is ApiError) return e.error as ApiError;
     return null;
   }
+
+  /// Static async factory — reads the backend URL from secure storage.
+  ///
+  /// Returns null if no URL has been saved yet (caller should show ServerSetupScreen).
+  static Future<ApiClient?> create(TokenStorage tokenStorage) async {
+    const storage = FlutterSecureStorage();
+    final url = await storage.read(key: kServerUrlStorageKey);
+    if (url == null || url.isEmpty) return null;
+    return ApiClient(baseUrl: url, tokenStorage: tokenStorage);
+  }
+
+  /// Register a new clinic and get owner access token.
+  Future<ClinicRegistrationResponse> registerClinic(ClinicRegistrationRequest request) async {
+    final response = await _dio.post('/v1/auth/register-clinic', data: request.toJson());
+    return ClinicRegistrationResponse.fromJson(response.data);
+  }
+
+  /// Login with username/password and get token.
+  Future<Map<String, dynamic>> login(String username, String password) async {
+    final response = await _dio.post('/v1/auth/login', data: {
+      'username': username,
+      'password': password,
+    });
+    return response.data as Map<String, dynamic>;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -96,10 +124,19 @@ class _ErrorInterceptor extends Interceptor {
     if (response != null) {
       final data = response.data;
       if (data is Map<String, dynamic>) {
-        // Check if error is nested under 'detail' key (FastAPI HTTPException format)
-        final errorData = data['detail'] is Map<String, dynamic>
-            ? data['detail'] as Map<String, dynamic>
-            : data;
+        // Phase 0 API: top-level { error_code, message, detail }
+        // Legacy: { detail: { error_code, message } } or string detail
+        final Map<String, dynamic> errorData;
+        if (data['error_code'] != null) {
+          errorData = data;
+        } else if (data['detail'] is Map<String, dynamic> &&
+            (data['detail'] as Map<String, dynamic>)['error_code'] != null) {
+          errorData = data['detail'] as Map<String, dynamic>;
+        } else if (data['detail'] is Map<String, dynamic>) {
+          errorData = data['detail'] as Map<String, dynamic>;
+        } else {
+          errorData = data;
+        }
         handler.reject(
           DioException(
             requestOptions: err.requestOptions,

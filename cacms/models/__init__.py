@@ -10,6 +10,8 @@ from cacms.models.payment import Payment, PaymentMode, PaymentStatus
 from cacms.models.audit_log import AuditLog
 from cacms.models.otp_session import OtpSession
 from cacms.models.sse_event import SseEvent
+from cacms.models.permission import Permission, RolePermission
+from cacms.models.usage_event import UsageEvent
 
 __all__ = [
     "Clinic",
@@ -29,4 +31,7 @@ __all__ = [
     "AuditLog",
     "OtpSession",
     "SseEvent",
+    "Permission",
+    "RolePermission",
+    "UsageEvent",
 ]

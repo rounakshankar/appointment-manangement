@@ -1,0 +1,75 @@
+# AWS EC2 + RDS deployment compose file.
+#
+# This runs ONLY the API container on EC2.
+# PostgreSQL is hosted on AWS RDS — do NOT include a db service here.
+# Redis runs as a sidecar on the same EC2 instance (free tier: t2.micro/t3.micro).
+#
+# Setup steps:
+#   1. SSH into EC2: ssh -i your-key.pem ec2-user@YOUR_EC2_IP
+#   2. Install Docker + Docker Compose on EC2 (see DEPLOYMENT_AWS.md)
+#   3. Copy this file and create a .env.production file (see .env.example)
+#   4. Run: docker compose -f docker-compose.aws.yml --env-file .env.production up -d
+#
+# RDS connection string format:
+#   DATABASE_URL=postgresql+asyncpg://cacms_user:PASSWORD@YOUR_RDS_ENDPOINT:5432/cacms
+#
+# Security group rules required on EC2:
+#   Inbound: TCP 8000 from 0.0.0.0/0 (or restrict to your IP for testing)
+#   Inbound: TCP 22 from your IP only (SSH)
+# Security group rules required on RDS:
+#   Inbound: TCP 5432 from EC2 security group only (never public)
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Redis is NOT exposed externally — only the API container talks to it
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  api:
+    image: cacms-api:latest   # built locally and pushed, or build: . for on-EC2 build
+    build: .
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8000:8000"
+    environment:
+      # --- Required: set in .env.production ---
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to your RDS endpoint in .env.production}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.production}
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS to your EC2 IP or domain in .env.production}
+
+      # --- Redis sidecar ---
+      REDIS_URL: redis://redis:6379/0
+
+      # --- Runtime ---
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+
+      # --- Optional ---
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      BACKUP_DIR: ${BACKUP_DIR:-/var/backups/cacms}
+      AUTH_RATE_LIMIT: ${AUTH_RATE_LIMIT:-10/minute}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+    volumes:
+      - backup_data:/var/backups/cacms
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  redis_data:
+  backup_data:

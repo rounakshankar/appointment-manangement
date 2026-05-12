@@ -9,32 +9,35 @@ import 'features/admin/admin_shell.dart';
 import 'features/doctor/login/login_screen.dart';
 import 'features/doctor/queue_dashboard/queue_dashboard_screen.dart';
 import 'features/doctor/consultation/consultation_screen.dart';
-import 'features/patient/otp_login/phone_screen.dart';
-import 'features/patient/otp_login/otp_screen.dart';
-import 'features/patient/live_status/live_status_screen.dart';
+// Patient OTP login screens removed — patients no longer log in.
+// Queue info is public via /v1/public/queue/{clinic_id}/{doctor_id}.
+// Medical records are delivered by email via /v1/public/request-records.
+// Kept in place for reference; replaced by public queue flow (Phase 1 SaaS).
+// import 'features/patient/otp_login/phone_screen.dart';
+// import 'features/patient/otp_login/otp_screen.dart';
+// import 'features/patient/live_status/live_status_screen.dart';
+import 'features/common/clinic_selection_screen.dart';
+import 'features/setup/server_setup_screen.dart';
 
 // ---------------------------------------------------------------------------
-// Backend base URL — change this to your server's IP/hostname for beta.
-// On Android emulator use 10.0.2.2; on a real device use your machine's LAN IP.
-// Override at build time: flutter run --dart-define=BACKEND_URL=http://10.218.231.247:8000
-// ---------------------------------------------------------------------------
-const String kBackendBaseUrl = String.fromEnvironment(
-  'BACKEND_URL',
-  defaultValue: 'http://10.22.74.162:8000',
-);
-
-// ---------------------------------------------------------------------------
-// Shared singletons
+// Shared singletons — initialised in main() after reading secure storage
 // ---------------------------------------------------------------------------
 
 final _tokenStorage = TokenStorage();
-final _apiClient = ApiClient(
-  baseUrl: kBackendBaseUrl,
-  tokenStorage: _tokenStorage,
-);
 
-void main() {
-  runApp(const ProviderScope(child: CacmsApp()));
+// ---------------------------------------------------------------------------
+// Entry point — async startup reads cacms_server_url from secure storage
+// ---------------------------------------------------------------------------
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Try to build ApiClient from stored URL; null = no URL saved yet
+  final apiClient = await ApiClient.create(_tokenStorage);
+
+  runApp(ProviderScope(
+    child: CacmsApp(initialApiClient: apiClient),
+  ));
 }
 
 // ---------------------------------------------------------------------------
@@ -55,11 +58,32 @@ Map<String, dynamic> _decodeJwtPayload(String token) {
 }
 
 // ---------------------------------------------------------------------------
-// Root app — role selection splash
+// Root app — routes to ServerSetupScreen or ClinicSelectionScreen
 // ---------------------------------------------------------------------------
 
-class CacmsApp extends StatelessWidget {
-  const CacmsApp({super.key});
+class CacmsApp extends StatefulWidget {
+  const CacmsApp({super.key, required this.initialApiClient});
+
+  final ApiClient? initialApiClient;
+
+  @override
+  State<CacmsApp> createState() => _CacmsAppState();
+}
+
+class _CacmsAppState extends State<CacmsApp> {
+  ApiClient? _apiClient;
+
+  @override
+  void initState() {
+    super.initState();
+    _apiClient = widget.initialApiClient;
+  }
+
+  void _onServerConfigured(String url) {
+    setState(() {
+      _apiClient = ApiClient(baseUrl: url, tokenStorage: _tokenStorage);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -67,7 +91,22 @@ class CacmsApp extends StatelessWidget {
       title: 'CACMS',
       theme: AppTheme.light,
       debugShowCheckedModeBanner: false,
-      home: const _RoleSelectionScreen(),
+      home: _apiClient == null
+          ? ServerSetupScreen(onSetupComplete: _onServerConfigured)
+          : ClinicSelectionScreen(
+              apiClient: _apiClient!,
+              tokenStorage: _tokenStorage,
+              onClinicSelected: (clinicId, clinicName) => Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => _RoleSelectionScreen(
+                    apiClient: _apiClient!,
+                    clinicId: clinicId,
+                    clinicName: clinicName,
+                  ),
+                ),
+              ),
+            ),
     );
   }
 }
@@ -77,12 +116,79 @@ class CacmsApp extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _RoleSelectionScreen extends StatelessWidget {
-  const _RoleSelectionScreen();
+  const _RoleSelectionScreen({
+    required this.apiClient,
+    required this.clinicId,
+    required this.clinicName,
+  });
+
+  final ApiClient apiClient;
+  final String clinicId;
+  final String clinicName;
+
+  void _openServerSetup(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ServerSetupScreen(
+          initialUrl: apiClient.dio.options.baseUrl,
+          onSetupComplete: (newUrl) {
+            // Pop back — the new URL takes effect on next app restart
+            // or the user can restart the app for a full re-init.
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Server URL saved. Restart the app to apply.'),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFE8F4F8),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Color(0xFF1A6B8A)),
+          onPressed: () => Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ClinicSelectionScreen(
+                apiClient: apiClient,
+                tokenStorage: _tokenStorage,
+                onClinicSelected: (newClinicId, newClinicName) => Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => _RoleSelectionScreen(
+                      apiClient: apiClient,
+                      clinicId: newClinicId,
+                      clinicName: newClinicName,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        title: Text(
+          clinicName,
+          style: const TextStyle(color: Color(0xFF1A6B8A), fontWeight: FontWeight.w600),
+        ),
+        // Settings gear — opens ServerSetupScreen to change backend URL
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, color: Color(0xFF1A6B8A)),
+            tooltip: 'Server Settings',
+            onPressed: () => _openServerSetup(context),
+          ),
+        ],
+      ),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(32),
@@ -92,17 +198,17 @@ class _RoleSelectionScreen extends StatelessWidget {
               const Icon(Icons.local_hospital, size: 64, color: Color(0xFF1A6B8A)),
               const SizedBox(height: 12),
               const Text(
-                'CACMS',
+                'Select Your Role',
                 style: TextStyle(
-                  fontSize: 28,
+                  fontSize: 24,
                   fontWeight: FontWeight.w700,
                   color: Color(0xFF1A6B8A),
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
-                'Clinic Appointment & Consultation System',
-                style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
+              Text(
+                'Clinic: $clinicName',
+                style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 48),
@@ -115,20 +221,35 @@ class _RoleSelectionScreen extends StatelessWidget {
                   context,
                   MaterialPageRoute(
                     builder: (_) => AdminLoginScreen(
-                      apiClient: _apiClient,
+                      apiClient: apiClient,
                       tokenStorage: _tokenStorage,
                       onLoginSuccess: () => Navigator.pushReplacement(
                         context,
                         MaterialPageRoute(
                           builder: (_) => AdminShell(
-                            apiClient: _apiClient,
+                            apiClient: apiClient,
                             tokenStorage: _tokenStorage,
                             onLogout: () async {
                               await _tokenStorage.clearToken();
                               if (context.mounted) {
                                 Navigator.pushAndRemoveUntil(
                                   context,
-                                  MaterialPageRoute(builder: (_) => const _RoleSelectionScreen()),
+                                  MaterialPageRoute(
+                                    builder: (_) => ClinicSelectionScreen(
+                                      apiClient: apiClient,
+                                      tokenStorage: _tokenStorage,
+                                      onClinicSelected: (newClinicId, newClinicName) => Navigator.pushReplacement(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => _RoleSelectionScreen(
+                                            apiClient: apiClient,
+                                            clinicId: newClinicId,
+                                            clinicName: newClinicName,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                   (_) => false,
                                 );
                               }
@@ -150,14 +271,31 @@ class _RoleSelectionScreen extends StatelessWidget {
                   context,
                   MaterialPageRoute(
                     builder: (_) => _DoctorLoginFlow(
-                      apiClient: _apiClient,
+                      apiClient: apiClient,
                       tokenStorage: _tokenStorage,
+                      clinicId: clinicId,
+                      clinicName: clinicName,
                       onLogout: () async {
                         await _tokenStorage.clearToken();
                         if (context.mounted) {
                           Navigator.pushAndRemoveUntil(
                             context,
-                            MaterialPageRoute(builder: (_) => const _RoleSelectionScreen()),
+                            MaterialPageRoute(
+                              builder: (_) => ClinicSelectionScreen(
+                                apiClient: apiClient,
+                                tokenStorage: _tokenStorage,
+                                onClinicSelected: (newClinicId, newClinicName) => Navigator.pushReplacement(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => _RoleSelectionScreen(
+                                      apiClient: apiClient,
+                                      clinicId: newClinicId,
+                                      clinicName: newClinicName,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
                             (_) => false,
                           );
                         }
@@ -168,42 +306,51 @@ class _RoleSelectionScreen extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               _RoleCard(
-                icon: Icons.person,
-                title: 'Patient',
-                subtitle: 'Check appointment status',
+                icon: Icons.assignment_ind,
+                title: 'Doc Assistant',
+                subtitle: 'Manage appointments & assist doctors',
                 color: const Color(0xFFF4A261),
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => PatientPhoneScreen(
-                      apiClient: _apiClient,
-                      onOtpSent: (phone) => Navigator.push(
+                    builder: (_) => _DocAssistantLoginScreen(
+                      apiClient: apiClient,
+                      tokenStorage: _tokenStorage,
+                      clinicId: clinicId,
+                      clinicName: clinicName,
+                      onLoginSuccess: () => Navigator.pushReplacement(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => PatientOtpScreen(
-                            phone: phone,
-                            apiClient: _apiClient,
+                          builder: (_) => _DocAssistantDashboard(
+                            apiClient: apiClient,
                             tokenStorage: _tokenStorage,
-                            onVerified: (patientId) => Navigator.pushReplacement(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => PatientLiveStatusScreen(
-                                  patientId: patientId,
-                                  apiClient: _apiClient,
-                                  onLogout: () async {
-                                    await _tokenStorage.clearToken();
-                                    if (context.mounted) {
-                                      Navigator.pushAndRemoveUntil(
+                            clinicId: clinicId,
+                            clinicName: clinicName,
+                            onLogout: () async {
+                              await _tokenStorage.clearToken();
+                              if (context.mounted) {
+                                Navigator.pushAndRemoveUntil(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => ClinicSelectionScreen(
+                                      apiClient: apiClient,
+                                      tokenStorage: _tokenStorage,
+                                      onClinicSelected: (newClinicId, newClinicName) => Navigator.pushReplacement(
                                         context,
-                                        MaterialPageRoute(builder: (_) => const _RoleSelectionScreen()),
-                                        (_) => false,
-                                      );
-                                    }
-                                  },
-                                ),
-                              ),
-                            ),
-                            onBack: () => Navigator.pop(context),
+                                        MaterialPageRoute(
+                                          builder: (_) => _RoleSelectionScreen(
+                                            apiClient: apiClient,
+                                            clinicId: newClinicId,
+                                            clinicName: newClinicName,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  (_) => false,
+                                );
+                              }
+                            },
                           ),
                         ),
                       ),
@@ -211,6 +358,9 @@ class _RoleSelectionScreen extends StatelessWidget {
                   ),
                 ),
               ),
+              // Patient role card removed — patients no longer log in.
+              // Queue info is public via the QR code / shared link.
+              // See PublicQueueScreen and RecordRequestScreen for the new patient flow.
             ],
           ),
         ),
@@ -227,11 +377,15 @@ class _DoctorLoginFlow extends StatefulWidget {
   const _DoctorLoginFlow({
     required this.apiClient,
     required this.tokenStorage,
+    required this.clinicId,
+    required this.clinicName,
     required this.onLogout,
   });
 
   final ApiClient apiClient;
   final TokenStorage tokenStorage;
+  final String clinicId;
+  final String clinicName;
   final VoidCallback onLogout;
 
   @override
@@ -242,11 +396,25 @@ class _DoctorLoginFlowState extends State<_DoctorLoginFlow> {
   DoctorInfo? _doctorInfo;
 
   void _onLoginSuccess(String token) async {
-    // Decode doctor_id from JWT sub claim
+    // JWT `sub` is the user_id; doctor queue APIs need linked_doctor_id.
     final payload = _decodeJwtPayload(token);
-    final doctorId = payload['sub'] as String? ?? '';
+    final doctorId = payload['linked_doctor_id'] as String? ?? '';
 
-    // Fetch doctor details from API
+    if (doctorId.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'This login is not a doctor account (missing linked doctor). '
+              'In Admin → Staff, add a user with role Doctor and link the doctor profile.',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
     DoctorInfo info;
     try {
       final resp = await widget.apiClient.dio.get('/v1/doctors');
@@ -254,15 +422,26 @@ class _DoctorLoginFlowState extends State<_DoctorLoginFlow> {
           .map((e) => e as Map<String, dynamic>)
           .where((d) => !(d['name'] as String).startsWith('Dr. Property'))
           .toList();
-      final match = doctors.firstWhere(
-        (d) => d['doctor_id'] == doctorId,
-        orElse: () => {'doctor_id': doctorId, 'name': 'Doctor', 'specialization': ''},
-      );
-      info = DoctorInfo(
-        doctorId: match['doctor_id'] as String,
-        name: match['name'] as String? ?? 'Doctor',
-        specialization: match['specialization'] as String? ?? '',
-      );
+      Map<String, dynamic>? match;
+      for (final d in doctors) {
+        if (d['doctor_id'] == doctorId) {
+          match = d;
+          break;
+        }
+      }
+      if (match != null) {
+        info = DoctorInfo(
+          doctorId: match['doctor_id'] as String,
+          name: match['name'] as String? ?? 'Doctor',
+          specialization: match['specialization'] as String? ?? '',
+        );
+      } else {
+        info = DoctorInfo(
+          doctorId: doctorId,
+          name: 'Doctor',
+          specialization: '',
+        );
+      }
     } catch (_) {
       info = DoctorInfo(
         doctorId: doctorId,
@@ -372,6 +551,80 @@ class _RoleCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Doc Assistant Login Screen (Placeholder)
+// ---------------------------------------------------------------------------
+
+class _DocAssistantLoginScreen extends StatelessWidget {
+  const _DocAssistantLoginScreen({
+    required this.apiClient,
+    required this.tokenStorage,
+    required this.clinicId,
+    required this.clinicName,
+    required this.onLoginSuccess,
+  });
+
+  final ApiClient apiClient;
+  final TokenStorage tokenStorage;
+  final String clinicId;
+  final String clinicName;
+  final VoidCallback onLoginSuccess;
+
+  @override
+  Widget build(BuildContext context) {
+    // TODO: Implement proper doc assistant login screen
+    // For now, just show a placeholder that calls onLoginSuccess
+    return Scaffold(
+      appBar: AppBar(title: const Text('Doc Assistant Login')),
+      body: Center(
+        child: ElevatedButton(
+          onPressed: onLoginSuccess,
+          child: const Text('Login (Placeholder)'),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Doc Assistant Dashboard (Placeholder)
+// ---------------------------------------------------------------------------
+
+class _DocAssistantDashboard extends StatelessWidget {
+  const _DocAssistantDashboard({
+    required this.apiClient,
+    required this.tokenStorage,
+    required this.clinicId,
+    required this.clinicName,
+    required this.onLogout,
+  });
+
+  final ApiClient apiClient;
+  final TokenStorage tokenStorage;
+  final String clinicId;
+  final String clinicName;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    // TODO: Implement proper doc assistant dashboard
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Doc Assistant - $clinicName'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: onLogout,
+          ),
+        ],
+      ),
+      body: const Center(
+        child: Text('Doc Assistant Dashboard\n\nTODO: Implement appointment management interface'),
       ),
     );
   }

@@ -13,12 +13,14 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 from hypothesis import given, settings, strategies as st
-from sqlalchemy import select, func
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from cacms.models.appointment import Appointment, AppointmentStatus, VisitType
+from cacms.models.clinic import Clinic
 from cacms.models.consultation import Consultation
 from cacms.models.doctor import Doctor
 from cacms.models.patient import Patient
@@ -32,6 +34,23 @@ from cacms.services.patient_service import create_patient
 from cacms.services.queue_manager import call_next
 from cacms.schemas.patient import PatientCreate
 from cacms.tests.integration.conftest import TEST_DATABASE_URL
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _property_db_available() -> None:
+    """Skip property tests when TEST_DATABASE_URL is unreachable (same as integration)."""
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        pytest.skip(
+            f"Property test database not available ({TEST_DATABASE_URL}): {exc}. "
+            "Set TEST_DATABASE_URL to a reachable PostgreSQL instance."
+        )
+    finally:
+        await engine.dispose()
+
 
 # ---------------------------------------------------------------------------
 # Hypothesis strategies
@@ -76,14 +95,23 @@ async def get_db_session():
     await engine.dispose()
 
 
-async def create_test_doctor(db: AsyncSession, max_patients: int = 50) -> Doctor:
-    """Create a test doctor."""
+async def create_test_clinic(db: AsyncSession) -> Clinic:
+    c = Clinic(name=f"Property Clinic {uuid.uuid4().hex[:8]}")
+    db.add(c)
+    await db.commit()
+    await db.refresh(c)
+    return c
+
+
+async def create_test_doctor(db: AsyncSession, clinic_id: uuid.UUID, max_patients: int = 50) -> Doctor:
+    """Create a test doctor scoped to a clinic."""
     doc = Doctor(
         doctor_id=uuid.uuid4(),
         name=f"Dr. Property {uuid.uuid4().hex[:6]}",
         specialization="General",
         active=True,
         max_patients_per_day=max_patients,
+        clinic_id=clinic_id,
     )
     db.add(doc)
     await db.commit()
@@ -91,14 +119,15 @@ async def create_test_doctor(db: AsyncSession, max_patients: int = 50) -> Doctor
     return doc
 
 
-async def create_test_service(db: AsyncSession) -> Service:
-    """Create a test service."""
+async def create_test_service(db: AsyncSession, clinic_id: uuid.UUID) -> Service:
+    """Create a test service scoped to a clinic."""
     svc = Service(
         service_id=uuid.uuid4(),
         name="Test Consultation",
         category=ServiceCategory.consultation,
         base_price=Decimal("200.00"),
         active=True,
+        clinic_id=clinic_id,
     )
     db.add(svc)
     await db.commit()
@@ -131,7 +160,9 @@ async def test_property_1_queue_number_uniqueness(n: int):
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid)
 
         # Create N patients and appointments
         queue_numbers = []
@@ -142,6 +173,7 @@ async def test_property_1_queue_number_uniqueness(n: int):
                 name=f"P1 Patient {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -183,7 +215,9 @@ async def test_property_2_emergency_priority(n_normal: int):
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid)
 
         # Create n_normal normal appointments
         normal_qns = []
@@ -194,6 +228,7 @@ async def test_property_2_emergency_priority(n_normal: int):
                 name=f"Normal Patient {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -214,6 +249,7 @@ async def test_property_2_emergency_priority(n_normal: int):
             name="Emergency Patient",
             phone=emerg_phone,
             consent_given=True,
+            clinic_id=cid,
         )
         db.add(emerg_pat)
         await db.commit()
@@ -265,7 +301,9 @@ async def test_property_3_at_most_one_in_progress(n: int):
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid)
 
         # Create N appointments
         for i in range(n):
@@ -275,6 +313,7 @@ async def test_property_3_at_most_one_in_progress(n: int):
                 name=f"P3 Patient {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -331,7 +370,9 @@ async def test_property_4_call_next_selects_minimum(n: int):
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid)
 
         # Create N appointments
         for i in range(n):
@@ -341,6 +382,7 @@ async def test_property_4_call_next_selects_minimum(n: int):
                 name=f"P4 Patient {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -408,8 +450,10 @@ async def test_property_6_consultation_one_to_one():
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db)
-        svc = await create_test_service(db)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid)
+        svc = await create_test_service(db, cid)
 
         phone = f"+91{uuid.uuid4().int % 10_000_000_000:010d}"
         pat = Patient(
@@ -417,6 +461,7 @@ async def test_property_6_consultation_one_to_one():
             name="P6 Patient",
             phone=phone,
             consent_given=True,
+            clinic_id=cid,
         )
         db.add(pat)
         await db.commit()
@@ -484,10 +529,13 @@ async def test_property_7_patient_phone_uniqueness(data: PatientCreate):
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async with session_factory() as db:
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+
         # First attempt — may succeed or fail if phone already exists from a prior run
         first_error = False
         try:
-            await create_patient(db, data)
+            await create_patient(db, data, cid)
         except IntegrityError:
             first_error = True
             await db.rollback()
@@ -495,13 +543,16 @@ async def test_property_7_patient_phone_uniqueness(data: PatientCreate):
         # Second attempt — must always fail with IntegrityError (phone already exists)
         error_raised = False
         try:
-            await create_patient(db, data)
+            await create_patient(db, data, cid)
         except IntegrityError:
             error_raised = True
             await db.rollback()
 
         count_result = await db.execute(
-            select(func.count()).where(Patient.phone == data.phone)
+            select(func.count()).where(
+                Patient.phone == data.phone,
+                Patient.clinic_id == cid,
+            )
         )
         count = count_result.scalar_one()
 
@@ -531,7 +582,9 @@ async def test_property_8_doctor_capacity_enforcement(capacity: int):
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db, max_patients=capacity)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid, max_patients=capacity)
 
         # Fill to capacity
         for i in range(capacity):
@@ -541,6 +594,7 @@ async def test_property_8_doctor_capacity_enforcement(capacity: int):
                 name=f"Cap Patient {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -560,6 +614,7 @@ async def test_property_8_doctor_capacity_enforcement(capacity: int):
             name="Overflow Patient",
             phone=overflow_phone,
             consent_given=True,
+            clinic_id=cid,
         )
         db.add(overflow_pat)
         await db.commit()
@@ -618,7 +673,9 @@ async def test_property_11_dashboard_remaining_count(
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid)
 
         for i in range(n_scheduled):
             phone = f"+91{uuid.uuid4().int % 10_000_000_000:010d}"
@@ -627,6 +684,7 @@ async def test_property_11_dashboard_remaining_count(
                 name=f"Scheduled {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -646,6 +704,7 @@ async def test_property_11_dashboard_remaining_count(
                 name=f"Completed {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -668,6 +727,7 @@ async def test_property_11_dashboard_remaining_count(
                 name=f"Cancelled {i}",
                 phone=phone,
                 consent_given=True,
+                clinic_id=cid,
             )
             db.add(pat)
             await db.commit()
@@ -720,8 +780,10 @@ async def test_property_12_followup_prompt_correctness(days_ahead: int):
     test_date = get_test_date()
 
     async with session_factory() as db:
-        doc = await create_test_doctor(db)
-        svc = await create_test_service(db)
+        clinic = await create_test_clinic(db)
+        cid = clinic.clinic_id
+        doc = await create_test_doctor(db, cid)
+        svc = await create_test_service(db, cid)
 
         phone = f"+91{uuid.uuid4().int % 10_000_000_000:010d}"
         pat = Patient(
@@ -729,6 +791,7 @@ async def test_property_12_followup_prompt_correctness(days_ahead: int):
             name="P12 Patient",
             phone=phone,
             consent_given=True,
+            clinic_id=cid,
         )
         db.add(pat)
         await db.commit()

@@ -13,6 +13,9 @@ class TokenStorage {
   Future<void> saveToken(String token) =>
       _storage.write(key: _key, value: token);
 
+  /// Alias for compatibility with existing code.
+  Future<void> setToken(String token) => saveToken(token);
+
   /// Return the stored token, or `null` if none exists.
   Future<String?> getToken() => _storage.read(key: _key);
 

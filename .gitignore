@@ -9,6 +9,8 @@ dist/
 *.egg-info/
 .eggs/
 .env
+.env.production
+.env.staging
 .venv
 venv/
 env/
@@ -39,3 +41,10 @@ cacms_flutter/build/
 .vscode/
 *.swp
 .DS_Store
+
+# Terraform secrets — never commit
+terraform/terraform.tfvars
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup

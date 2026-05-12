@@ -46,18 +46,18 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - Update `patient.py`, `doctor.py`, `appointment.py`, `consultation.py`, `service.py`, `payment.py`, `audit_log.py` — add `clinic_id: Mapped[uuid.UUID]` with FK to `clinics.clinic_id`
     - _Requirements: 3.7_
 
-- [-] 4. Implement real bcrypt authentication in `cacms/routers/auth.py`
+- [x] 4. Implement real bcrypt authentication in `cacms/routers/auth.py`
   - Remove `ADMIN_USERNAME`, `_ADMIN_PASSWORD_HASH`, `_get_admin_password_hash`
   - On `POST /v1/auth/login`: query `users` table by `username`, call `bcrypt.checkpw`, return 401 on failure
   - Issue JWT with `sub=user_id`, `role=role`, `clinic_id=clinic_id`
   - Apply `@limiter.limit(settings.AUTH_RATE_LIMIT)` to `/login` and `/request-otp`
   - _Requirements: 1.2, 1.3, 1.4, 1.6, 1.7, 2.1, 6.4_
 
-  - [ ] 4.1 Write property test for bcrypt hash round-trip (Property 1)
+  - [x] 4.1 Write property test for bcrypt hash round-trip (Property 1)
     - **Property 1: Bcrypt hash round-trip**
     - **Validates: Requirements 1.2, 1.3**
 
-  - [ ] 4.2 Write property test for JWT role claim round-trip (Property 3)
+  - [x] 4.2 Write property test for JWT role claim round-trip (Property 3)
     - **Property 3: JWT role claim round-trip**
     - **Validates: Requirements 2.1**
 
@@ -65,11 +65,11 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - **Property 4: Invalid role tokens are rejected**
     - **Validates: Requirements 2.2**
 
-  - [ ] 4.4 Write unit tests for auth router
+  - [x] 4.4 Write unit tests for auth router
     - Correct credentials → 200 + JWT; wrong password → 401; unknown username → 401
     - _Requirements: 1.3, 1.7_
 
-- [ ] 5. Update `cacms/middleware/auth_middleware.py`
+- [x] 5. Update `cacms/middleware/auth_middleware.py`
   - Add `clinic_id: uuid.UUID` field to `UserContext` dataclass
   - Populate `clinic_id` from the decoded JWT `clinic_id` claim in `get_current_user`
   - Validate that `role` is one of `{owner, admin, doctor, receptionist}`; raise HTTP 401 otherwise
@@ -80,7 +80,7 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - **Property 5: Unauthorized role returns 403**
     - **Validates: Requirements 2.4**
 
-- [ ] 6. Update `cacms/main.py`
+- [x] 6. Update `cacms/main.py`
   - Replace `allow_origins=["*"]` with `allow_origins=settings.CORS_ORIGINS`
   - Add `slowapi` `Limiter` instance and `_rate_limit_exceeded_handler` returning 429 with `error_code: "RATE_LIMIT_EXCEEDED"`
   - Register `backup.router`
@@ -90,7 +90,7 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - **Property 11: Rate limiter blocks excess auth requests**
     - **Validates: Requirements 6.4, 6.5**
 
-- [ ] 7. Update all service functions to filter by `clinic_id`
+- [x] 7. Update all service functions to filter by `clinic_id`
   - In `patient_service.py`, `appointment_service.py`, `consultation_service.py`, `payment_service.py`, `service_catalog.py`: add `clinic_id` parameter to all query functions and apply `WHERE clinic_id = :clinic_id` filter
   - On record creation, set `clinic_id` from `UserContext.clinic_id`; do not accept it from request body
   - On record lookup, return 404 if `clinic_id` does not match
@@ -105,10 +105,10 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - **Property 7: Cross-clinic access returns 404**
     - **Validates: Requirements 3.5**
 
-- [ ] 8. Checkpoint — ensure all backend tests pass
+- [x] 8. Checkpoint — ensure all backend tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 9. Create `cacms/services/backup_service.py`
+- [x] 9. Create `cacms/services/backup_service.py`
   - `trigger_backup(db_url, backup_dir, encryption_key)` — runs `pg_dump` via `subprocess`, pipes through gzip, encrypts with AES-256-GCM (PBKDF2-HMAC-SHA256, ≥100k iterations, random 16-byte salt, 12-byte nonce), writes `cacms_backup_YYYYMMDD_HHMMSS.enc`; if `pg_dump` exits non-zero, delete any partial file and raise
   - `list_backups(backup_dir)` — scans for `*.enc` files, returns filename, size, mtime
   - `get_backup_path(backup_dir, filename)` — validates filename (no path traversal), returns `Path`
@@ -122,7 +122,7 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - **Property 9: Failed pg_dump leaves no partial file**
     - **Validates: Requirements 5.7**
 
-- [ ] 10. Create `cacms/routers/backup.py`
+- [x] 10. Create `cacms/routers/backup.py`
   - `POST /v1/admin/backup` — `require_owner_or_admin` dependency; returns 503 if `BACKUP_ENCRYPTION_KEY` empty; calls `backup_service.trigger_backup`; returns filename on success
   - `GET /v1/admin/backups` — `require_owner_or_admin`; calls `backup_service.list_backups`
   - `GET /v1/admin/backup/{filename}` — `require_owner_or_admin`; calls `backup_service.get_backup_path`; streams file with `FileResponse`
@@ -132,7 +132,7 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - Owner/admin can trigger backup; doctor/receptionist get 403; missing key → 503; download streams bytes
     - _Requirements: 5.1, 5.6_
 
-- [ ] 11. Create `seed_admin.py`
+- [x] 11. Create `seed_admin.py`
   - Standalone script (not a migration) that reads `SEED_ADMIN_USERNAME` and `SEED_ADMIN_PASSWORD` from env
   - Validates `SEED_ADMIN_PASSWORD` length ≥ 12; exits non-zero with descriptive stderr message if not
   - Hashes password with bcrypt cost 12; inserts into `users` with `role="owner"` and the seeded clinic's `clinic_id`
@@ -147,25 +147,25 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
     - Valid credentials → `users` row with bcrypt hash; password < 12 chars → non-zero exit
     - _Requirements: 1.4, 1.5_
 
-- [ ] 12. Create Flutter server setup screen
+- [x] 12. Create Flutter server setup screen
   - Create `cacms_flutter/lib/features/setup/server_setup_screen.dart`
   - URL text field with inline validation (must be well-formed HTTP/HTTPS URL; no request sent if malformed)
   - "Test Connection" button: `GET {url}/health`, show success if `{"status": "ok"}` else show error
   - "Save" button (enabled after successful test): write URL to `flutter_secure_storage` under key `cacms_server_url`, navigate to role-selection screen
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.8_
 
-- [ ] 13. Update `cacms_flutter/lib/core/api/api_client.dart`
+- [x] 13. Update `cacms_flutter/lib/core/api/api_client.dart`
   - Remove compile-time `kBackendBaseUrl` / `String.fromEnvironment('BACKEND_URL')` constant
   - Add `ApiClient.create()` static async factory that reads `cacms_server_url` from `flutter_secure_storage` before constructing `Dio`
   - _Requirements: 4.6_
 
-- [ ] 14. Update `cacms_flutter/lib/main.dart`
+- [x] 14. Update `cacms_flutter/lib/main.dart`
   - Make `main()` async; read `cacms_server_url` from secure storage on startup
   - If absent → show `ServerSetupScreen` as home; if present → construct `ApiClient` with stored URL, show role-selection screen
   - Add settings gear `IconButton` on `_RoleSelectionScreen` AppBar that pushes `ServerSetupScreen`
   - _Requirements: 4.1, 4.7_
 
-- [ ] 15. Create Flutter backup screen and wire into admin shell
+- [x] 15. Create Flutter backup screen and wire into admin shell
   - Create `cacms_flutter/lib/features/admin/backup/backup_screen.dart`
     - "Create Backup" button → `POST /v1/admin/backup`; loading indicator disables button during in-progress backup
     - List of backups from `GET /v1/admin/backups` showing filename, size, timestamp
@@ -173,12 +173,12 @@ clinic_id filtering, then backup system, then seed script, then Flutter screens,
   - Update `cacms_flutter/lib/features/admin/admin_shell.dart` to add `BackupScreen` as tab 4
   - _Requirements: 5.8, 5.9_
 
-- [ ] 16. Update `.env.example`
+- [x] 16. Update `.env.example`
   - Document all new variables: `JWT_SECRET`, `CORS_ORIGINS`, `BACKUP_ENCRYPTION_KEY`, `BACKUP_DIR`, `AUTH_RATE_LIMIT`, `SEED_ADMIN_USERNAME`, `SEED_ADMIN_PASSWORD`
   - Mark required vs optional; include example values and comments
   - _Requirements: 6.8_
 
-- [ ] 17. Final checkpoint — ensure all tests pass
+- [x] 17. Final checkpoint — ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

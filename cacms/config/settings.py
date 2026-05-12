@@ -6,9 +6,19 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/cacms"
+
+    # --- Runtime ---
+    ENVIRONMENT: str = "development"
+
+    # --- Redis (optional; health check and future metering / Celery) ---
+    REDIS_URL: str = ""
+
+    # --- Monitoring ---
+    SENTRY_DSN: str = ""
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
 
     # --- Auth (required, no defaults) ---
     JWT_SECRET: str = ""
@@ -32,6 +42,16 @@ class Settings(BaseSettings):
     SEED_ADMIN_USERNAME: str = ""
     SEED_ADMIN_PASSWORD: str = ""
 
+    # --- Super-admin (static token auth, not JWT) ---
+    SUPERADMIN_TOKEN: str = ""
+
+    # --- Email (SMTP — optional; when not configured, emails are logged only) ---
+    EMAIL_FROM: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+
     @field_validator("JWT_SECRET")
     @classmethod
     def jwt_secret_must_be_set(cls, v: str) -> str:
@@ -50,7 +70,12 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     @model_validator(mode="after")
-    def warn_if_cors_empty(self) -> "Settings":
+    def validate_production_settings(self) -> "Settings":
+        if self.ENVIRONMENT == "production" and not self.SUPERADMIN_TOKEN:
+            raise ValueError(
+                "SUPERADMIN_TOKEN must be set in production. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
         if not self.cors_origins_list:
             logger.warning(
                 "CORS_ORIGINS is not configured — all cross-origin requests will be blocked. "

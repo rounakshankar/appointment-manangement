@@ -2,7 +2,10 @@
 SSE endpoints for real-time event streaming.
 
 GET /v1/events/doctor/{doctor_id}  — Admin or Doctor role
-GET /v1/events/patient/{patient_id} — Patient role (OTP-issued JWT)
+
+The patient SSE endpoint (GET /v1/events/patient/{patient_id}) has been removed.
+Patients no longer log in — the public SSE stream at
+GET /v1/public/events/queue/{clinic_id}/{doctor_id} replaces it (Task 18.3).
 """
 
 from __future__ import annotations
@@ -20,8 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cacms.database import get_db
 from cacms.middleware.auth_middleware import UserContext, get_current_user
 from cacms.models.doctor import Doctor
-from cacms.models.patient import Patient
-from cacms.models.sse_event import SseEvent
 from cacms.services.sse_bus import sse_bus
 
 logger = logging.getLogger(__name__)
@@ -162,42 +163,6 @@ async def doctor_sse(
         )
 
     channel = f"doctor:{doctor_id}"
-    last_event_id: Optional[str] = request.headers.get("Last-Event-ID")
-
-    return _sse_response(event_generator(db, channel, last_event_id))
-
-
-@router.get("/patient/{patient_id}")
-async def patient_sse(
-    patient_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    current_user: UserContext = Depends(get_current_user),
-):
-    """
-    SSE stream for a patient channel.
-    Requires Patient role. Patients may only subscribe to their own channel.
-    """
-    if current_user.role != "patient":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error_code": "FORBIDDEN", "message": "Insufficient permissions"},
-        )
-    if current_user.patient_id != patient_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error_code": "FORBIDDEN", "message": "Cannot subscribe to another patient's channel"},
-        )
-    result = await db.execute(
-        select(Patient).where(Patient.patient_id == patient_id, Patient.clinic_id == current_user.clinic_id)
-    )
-    if result.scalar_one_or_none() is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": "PATIENT_NOT_FOUND", "message": "Patient not found"},
-        )
-
-    channel = f"patient:{patient_id}"
     last_event_id: Optional[str] = request.headers.get("Last-Event-ID")
 
     return _sse_response(event_generator(db, channel, last_event_id))

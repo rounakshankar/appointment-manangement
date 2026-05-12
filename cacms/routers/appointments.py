@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cacms.database import get_db
@@ -31,6 +31,7 @@ router = APIRouter(prefix="/appointments", tags=["appointments"])
     },
 )
 async def book_appointment(
+    request: Request,
     body: AppointmentCreate,
     db: AsyncSession = Depends(get_db),
     user=Depends(require_owner_or_admin_or_receptionist),
@@ -43,6 +44,7 @@ async def book_appointment(
     - Assigns queue number atomically.
     - Persists appointment with status=scheduled.
     - Emits appointment_created SSE event to doctor:{doctor_id} channel.
+    - Records an 'appointment_created' usage event for metering.
     """
     _error_map = {
         "PATIENT_NOT_FOUND": (status.HTTP_404_NOT_FOUND, "Patient not found"),
@@ -68,6 +70,14 @@ async def book_appointment(
             status_code=http_status,
             detail={"error_code": error_code, "message": message},
         )
+
+    # Fire-and-forget metering — non-fatal if metering is unavailable
+    metering = getattr(request.app.state, "metering", None)
+    if metering is not None:
+        try:
+            await metering.record(db, user.clinic_id, "appointment_created")
+        except Exception:
+            pass  # metering must never block the primary request path
 
     return appointment
 

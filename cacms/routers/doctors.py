@@ -7,13 +7,15 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cacms.database import get_db
 from cacms.middleware.auth_middleware import require_owner_or_admin, require_owner_or_admin_or_doctor_or_receptionist
+from cacms.models.clinic import Clinic
 from cacms.models.doctor import Doctor
 from cacms.schemas.common import ErrorResponse
+from cacms.services.plan_enforcer import plan_enforcer
 
 router = APIRouter(prefix="/doctors", tags=["doctors"])
 
@@ -81,7 +83,23 @@ async def create_doctor(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_owner_or_admin),
 ):
-    """Create a new doctor. Admin only."""
+    """Create a new doctor. Enforces max_doctors plan limit."""
+    # Fetch clinic for plan enforcement
+    clinic_result = await db.execute(select(Clinic).where(Clinic.clinic_id == user.clinic_id))
+    clinic = clinic_result.scalar_one_or_none()
+    if clinic is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"error_code": "CLINIC_NOT_FOUND", "message": "Clinic not found"})
+
+    # Count active doctors for this clinic
+    count_result = await db.execute(
+        select(func.count()).where(Doctor.clinic_id == user.clinic_id, Doctor.active == True)  # noqa: E712
+    )
+    current_count = count_result.scalar_one()
+
+    # Enforce plan limit — raises HTTP 402 if at or above limit
+    plan_enforcer.check_limit(clinic, "max_doctors", current_count)
+
     doctor = Doctor(
         name=body.name,
         specialization=body.specialization,

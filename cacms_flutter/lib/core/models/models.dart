@@ -4,3 +4,4 @@ export 'consultation.dart';
 export 'service.dart';
 export 'payment.dart';
 export 'sse_event.dart';
+export 'auth.dart';

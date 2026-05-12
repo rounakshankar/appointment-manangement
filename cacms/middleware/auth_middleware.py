@@ -3,11 +3,15 @@ from dataclasses import dataclass
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from cacms.services.jwt_service import decode_token
+from cacms.database import get_db
+from cacms.models.permission import RolePermission
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
-VALID_STAFF_ROLES = {"owner", "admin", "doctor", "receptionist"}
+VALID_STAFF_ROLES = {"owner", "admin", "doctor", "doc_assistant", "receptionist"}
 
 
 @dataclass
@@ -32,6 +36,10 @@ class UserContext:
     @property
     def is_receptionist(self) -> bool:
         return self.role == "receptionist"
+
+    @property
+    def is_doc_assistant(self) -> bool:
+        return self.role == "doc_assistant"
 
     @property
     def is_patient(self) -> bool:
@@ -71,8 +79,8 @@ async def get_current_user(
             detail={"error_code": "UNAUTHORIZED", "message": "Invalid token claims"},
         )
 
-    # Validate role for staff tokens; patient tokens are allowed through
-    if role not in VALID_STAFF_ROLES and role != "patient":
+    # Validate role for staff tokens
+    if role not in VALID_STAFF_ROLES:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error_code": "UNAUTHORIZED", "message": f"Invalid role: {role}"},
@@ -132,11 +140,70 @@ def require_roles(*roles: str):
 require_owner = require_roles("owner")
 require_admin = require_roles("admin")
 require_doctor = require_roles("doctor")
+require_doc_assistant = require_roles("doc_assistant")
 require_receptionist = require_roles("receptionist")
 require_patient = require_roles("patient")
 require_owner_or_admin = require_roles("owner", "admin")
 require_owner_or_admin_or_receptionist = require_roles("owner", "admin", "receptionist")
-require_staff = require_roles("owner", "admin", "doctor", "receptionist")
+require_staff = require_roles("owner", "admin", "doctor", "doc_assistant", "receptionist")
 require_admin_or_doctor = require_roles("admin", "doctor")
 require_owner_or_admin_or_doctor = require_roles("owner", "admin", "doctor")
 require_owner_or_admin_or_doctor_or_receptionist = require_roles("owner", "admin", "doctor", "receptionist")
+require_owner_or_admin_or_doctor_or_doc_assistant = require_roles("owner", "admin", "doctor", "doc_assistant")
+
+
+def require_permission(permission_name: str):
+    """Dependency factory that checks if user has specific permission."""
+    async def _check(
+        user: UserContext = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ) -> UserContext:
+        # Owners have all permissions
+        if user.role == "owner":
+            return user
+
+        # Check if role has the permission (global or clinic-specific)
+        result = await db.execute(
+            select(RolePermission).where(
+                RolePermission.role == user.role,
+                RolePermission.permission_id.in_(
+                    select(RolePermission.permission_id).where(
+                        (RolePermission.clinic_id == user.clinic_id) | (RolePermission.clinic_id.is_(None))
+                    )
+                )
+            ).distinct()
+        )
+        role_permissions = result.scalars().all()
+
+        # For now, we'll implement a simple check - in production you'd join with permissions table
+        # This is a placeholder - we'll need to seed permissions and check properly
+        if user.role == "admin":
+            # Admins can do most things except owner-only actions
+            allowed_permissions = {
+                "view_patients", "create_patients", "edit_patients",
+                "view_appointments", "create_appointments", "edit_appointments",
+                "view_services", "create_services", "edit_services",
+                "view_doctors", "create_doctors", "edit_doctors",
+                "view_reports", "view_billing"
+            }
+            if permission_name in allowed_permissions:
+                return user
+        elif user.role == "doctor":
+            allowed_permissions = {
+                "view_own_patients", "view_own_appointments", "edit_own_appointments",
+                "record_consultations", "view_archived_reports"
+            }
+            if permission_name in allowed_permissions:
+                return user
+        elif user.role == "doc_assistant":
+            allowed_permissions = {
+                "view_appointments", "create_appointments", "edit_appointment_status"
+            }
+            if permission_name in allowed_permissions:
+                return user
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error_code": "FORBIDDEN", "message": f"Permission denied: {permission_name}"},
+        )
+    return _check

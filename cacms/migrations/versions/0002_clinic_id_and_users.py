@@ -88,7 +88,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["linked_doctor_id"], ["doctors.doctor_id"],
                                 name="fk_users_linked_doctor"),
         sa.CheckConstraint(
-            "role IN ('owner', 'admin', 'doctor', 'receptionist')",
+            "role IN ('owner', 'admin', 'doctor', 'doc_assistant', 'receptionist')",
             name="ck_users_role",
         ),
     )

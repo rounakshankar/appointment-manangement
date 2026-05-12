@@ -1,3 +1,14 @@
+"""
+Auth router — JWT login and clinic registration.
+
+Patient OTP login has been removed entirely (Phase 1 SaaS redesign).
+Patients never log in — queue info is public, medical records are delivered
+by email on request via POST /v1/public/request-records.
+
+otp_service.py and the otp_sessions table are kept in place for potential
+staff 2FA in a future phase but are not exposed via API.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -5,11 +16,11 @@ from sqlalchemy import select
 from cacms.database import get_db
 from cacms.limiter import limiter
 from cacms.models.user import User
-from cacms.schemas.auth import LoginRequest, TokenResponse, OtpRequest, OtpVerifyRequest
+from cacms.models.clinic import Clinic
+from cacms.schemas.auth import LoginRequest, TokenResponse, ClinicRegistrationRequest, ClinicRegistrationResponse
 from cacms.schemas.common import ErrorResponse
 from cacms.services.jwt_service import create_token
-from cacms.services.otp_service import generate_otp, verify_otp
-from cacms.services.password_service import verify_password
+from cacms.services.password_service import verify_password, hash_password
 from cacms.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -50,60 +61,58 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
 
 
 @router.post(
-    "/verify-otp",
-    response_model=TokenResponse,
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    "/register-clinic",
+    response_model=ClinicRegistrationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
-async def verify_otp_endpoint(body: OtpVerifyRequest, db: AsyncSession = Depends(get_db)):
-    """OTP verification for Patient role. Returns JWT on success."""
-    from cacms.services.patient_service import get_patient_by_phone, normalise_phone
-
-    patient = await get_patient_by_phone(db, body.phone)
-    if not patient:
+@limiter.limit("5/minute")
+async def register_clinic(request: Request, body: ClinicRegistrationRequest, db: AsyncSession = Depends(get_db)):
+    """Register a new clinic and create the owner user."""
+    # Check if clinic name already exists
+    clinic_result = await db.execute(select(Clinic).where(Clinic.name == body.clinic_name))
+    if clinic_result.scalar_one_or_none() is not None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": "PATIENT_NOT_FOUND", "message": "No patient with that phone number"},
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error_code": "CLINIC_EXISTS", "message": "Clinic with this name already exists"},
         )
 
-    session = await verify_otp(db, patient.phone, body.otp)
-    if not session:
-        session = await verify_otp(db, normalise_phone(body.phone), body.otp)
-    if not session:
+    # Check if username already exists
+    user_result = await db.execute(select(User).where(User.username == body.owner_username))
+    if user_result.scalar_one_or_none() is not None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error_code": "UNAUTHORIZED", "message": "Invalid or expired OTP"},
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error_code": "USERNAME_EXISTS", "message": "Username already exists"},
         )
 
-    token = create_token({
-        "sub": str(patient.patient_id),
-        "role": "patient",
-        "clinic_id": str(patient.clinic_id),
-    })
-    return TokenResponse(
-        access_token=token,
-        role="patient",
-        user_id=str(patient.patient_id),
-        clinic_id=str(patient.clinic_id),
+    # Create clinic
+    clinic = Clinic(name=body.clinic_name)
+    db.add(clinic)
+    await db.flush()  # Get clinic_id
+
+    # Create owner user
+    owner_user = User(
+        username=body.owner_username,
+        password_hash=hash_password(body.owner_password),
+        role="owner",
+        clinic_id=clinic.clinic_id,
+        active=True,
     )
+    db.add(owner_user)
+    await db.commit()
+    await db.refresh(owner_user)
 
+    # Create JWT token
+    token = create_token({
+        "sub": str(owner_user.user_id),
+        "role": owner_user.role,
+        "clinic_id": str(owner_user.clinic_id),
+        "linked_doctor_id": None,
+    })
 
-@router.post(
-    "/request-otp",
-    status_code=200,
-    responses={404: {"model": ErrorResponse}},
-)
-@limiter.limit(settings.AUTH_RATE_LIMIT)
-async def request_otp(request: Request, body: OtpRequest, db: AsyncSession = Depends(get_db)):
-    """Generate and (stub) send OTP to patient's phone."""
-    from cacms.services.patient_service import get_patient_by_phone
-
-    patient = await get_patient_by_phone(db, body.phone)
-    if not patient:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": "PATIENT_NOT_FOUND", "message": "No patient with that phone number"},
-        )
-
-    otp = await generate_otp(db, patient.phone)
-    print(f"[OTP STUB] Phone: {patient.phone}  OTP: {otp}")
-    return {"message": "OTP sent"}
+    return ClinicRegistrationResponse(
+        clinic_id=str(clinic.clinic_id),
+        clinic_name=clinic.name,
+        owner_user_id=str(owner_user.user_id),
+        access_token=token,
+    )

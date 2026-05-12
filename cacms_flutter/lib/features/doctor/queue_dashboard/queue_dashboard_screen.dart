@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:dio/dio.dart';
@@ -198,6 +199,83 @@ class _DoctorQueueDashboardScreenState
   }
 
   // ---------------------------------------------------------------------------
+  // Share Queue Link
+  // ---------------------------------------------------------------------------
+
+  void _showShareDialog() {
+    // Extract clinic_id from the JWT stored in the API client
+    // The public queue URL format: {baseUrl}/v1/public/queue/{clinic_id}/{doctor_id}
+    final baseUrl = widget.apiClient.dio.options.baseUrl;
+    final doctorId = widget.doctor.doctorId;
+
+    // We need the clinic_id — read it from the token asynchronously
+    widget.apiClient.getToken().then((token) {
+      if (!mounted) return;
+      String clinicId = '';
+      if (token != null) {
+        try {
+          final parts = token.split('.');
+          if (parts.length == 3) {
+            var payload = parts[1]
+                .replaceAll('-', '+')
+                .replaceAll('_', '/');
+            while (payload.length % 4 != 0) payload += '=';
+            final decoded = utf8.decode(base64Decode(payload));
+            final json = jsonDecode(decoded) as Map<String, dynamic>;
+            clinicId = json['clinic_id'] as String? ?? '';
+          }
+        } catch (_) {}
+      }
+
+      final queueUrl = '$baseUrl/v1/public/queue/$clinicId/$doctorId';
+
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Share Queue Link'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Patients can scan this QR code or use the link below to check queue status without logging in.',
+                style: TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              // QR code placeholder — replace with QrImageView when qr_flutter is added
+              Container(
+                width: 200,
+                height: 200,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  'QR Code\n(add qr_flutter\nto pubspec.yaml)',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SelectableText(
+                queueUrl,
+                style: const TextStyle(fontSize: 11, color: Colors.blue),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // No-show / Cancel
   // ---------------------------------------------------------------------------
 
@@ -256,6 +334,11 @@ class _DoctorQueueDashboardScreenState
               style:
                   AppTypography.caption.copyWith(color: AppColors.primaryLight),
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.share_outlined),
+            onPressed: _showShareDialog,
+            tooltip: 'Share Queue Link',
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),

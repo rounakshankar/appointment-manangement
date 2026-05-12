@@ -1,7 +1,7 @@
 from datetime import date as date_type
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,12 +54,13 @@ async def _sum_collection(
 
 @router.get("/daily", response_model=DailyReport)
 async def daily_report(
+    request: Request,
     report_date: date_type | None = Query(None),
     db: AsyncSession = Depends(get_db),
     user: UserContext = Depends(require_owner_or_admin),
 ):
     report_date = report_date or date_type.today()
-    return DailyReport(
+    result = DailyReport(
         report_date=report_date,
         total_appointments=await _count_status(db, user.clinic_id, report_date),
         scheduled=await _count_status(db, user.clinic_id, report_date, AppointmentStatus.scheduled),
@@ -72,3 +73,13 @@ async def daily_report(
         pending_collection=await _sum_collection(db, user.clinic_id, report_date, PaymentStatus.pending),
         partial_collection=await _sum_collection(db, user.clinic_id, report_date, PaymentStatus.partial),
     )
+
+    # Fire-and-forget metering — non-fatal if metering is unavailable
+    metering = getattr(request.app.state, "metering", None)
+    if metering is not None:
+        try:
+            await metering.record(db, user.clinic_id, "report_export")
+        except Exception:
+            pass  # metering must never block the primary request path
+
+    return result
